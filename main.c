@@ -128,12 +128,11 @@ void *fileread(char *filepath) {
             usleep(sleep_time * 1000);
         }
         else if (!strcmp(token, "stop\n")) {
-            file_read_done = 1;
             printf("fileread complete\n");
+            break;
         }
-        
     }
-    
+    file_read_done = 1;
 }
 
 
