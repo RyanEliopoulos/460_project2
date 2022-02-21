@@ -49,6 +49,8 @@ sem_t io_sem;
 struct PCB *ready_q = NULL;
 struct PCB *io_q = NULL;
 
+file_read_done = 0;  // updated to 1 upon completion
+
 void main(int argc, char *argv[]) {
     printf("argc: %d\n", argc);
 
@@ -126,6 +128,7 @@ void *fileread(char *filepath) {
             usleep(sleep_time * 1000);
         }
         else if (!strcmp(token, "stop\n")) {
+            file_read_done = 1;
             printf("fileread complete\n");
         }
         
@@ -134,12 +137,17 @@ void *fileread(char *filepath) {
 }
 
 
+void cpu_scheduler(char *alg) {
+    
+   
+}
 
 
 /*      List management functions */
+
+/* ready q function */
 void makeAndAddPCB(char* info, int newPID) {
     // Used by the fileread thread 
-
     
 	// Storage for using strtok_r
 	char *restOfString = info;
@@ -179,6 +187,8 @@ void makeAndAddPCB(char* info, int newPID) {
 	readyAddPCB(newPCB);
 }
 
+
+/* ready q function */
 void readyAddPCB(struct PCB* newPCB) {
     // Adds the given pcb to the ready_q. 
     // Called by the fileread thread, CPU, or io threads
@@ -213,6 +223,10 @@ void readyAddPCB(struct PCB* newPCB) {
     sem_post(&ready_sem);
 }
 
+
+
+
+/// Queue support functions
 void printPCBs(struct PCB* queue) {
 	struct PCB* current = queue;
 	while(current != NULL) {
