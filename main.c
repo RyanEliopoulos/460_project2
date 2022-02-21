@@ -1,5 +1,5 @@
 /*
- *
+ * bacon
  *  Need a ready Q semaphore and an io_q semaphore
  *
  *
@@ -19,28 +19,47 @@
 
 
 void print_usage();
+void *threading_test();
 
 void main(int argc, char *argv[]) {
     printf("argc: %d\n", argc);
 
-    unsigned int t_slice;
+    unsigned int t_slice = 0;
     if (!valid_args(argc, argv, &t_slice)) {
         print_usage();
         exit(-1);
     }
+    printf("time slice: %u\n", t_slice);
     // Argument format valid. Input file error checked in relevant thread.
     printf("Arguments check out. Creating semaphores\n");
-    sem_t *ready_sem = sem_open("ready_sem", O_CREAT, O_RDWR, 1);
-    printf("ready sem: %s\n", strerror(errno));
-    sem_t *io_sem = sem_open("io_sem", O_CREAT, O_RDWR, 1);
-    printf("io sem: %s\n", strerror(errno));
+    sem_t ready_sem;
+    sem_t io_sem;
+
+    if (sem_init(&ready_sem, 0, 1) == -1) {
+        printf("ready sem: %s\n", strerror(errno));
+        errno = 0;
+    }
+    if (sem_init(&io_sem, 0, 1) == -1) {
+        printf("io sem: %s\n", strerror(errno));
+    }
+
     // Creating fileread thread
     pthread_t fileread_thread;
-    //int ret = pthread_create(&fileread_thread, 
-}
+    int ret = pthread_create(&fileread_thread, NULL, (*threading_test), NULL);
+    printf("ret: %d\n", ret);
+    pthread_join(fileread_thread, NULL);
+}   
 
 void print_usage() {
     printf("Usage: -alg [FIFO|SJF|PR|RR] [-quantum [integer(ms)]] -input [file name]\n");
 }
 
+
+void *threading_test() {
+
+    for (int i = 0; i < 10; i++) {
+        printf("in other thread %d\n", i);
+    }
+     
+}
 
