@@ -37,20 +37,22 @@ struct PCB {
 void print_usage();
 void *fileread();       // file read thread
 void *cpu_process();    // cpu thread
-
 void cpu_sim(struct PCB*); // cpu_process helper
+void *io_process();  // io thread
 
 ////// list management
 /* helpers */
 void printPCBs(struct PCB*);
 void freePCBs(struct PCB*);
 void addDoneQ(struct PCB*);
+void printError(char *thread, char *message);
 /* ready q */
 void makeAndAddPCB(char* info, int newPID);
 void readyAddPCB(struct PCB*);
 struct PCB* readyRemovePCB(char *);
 /* io q */
 void addIOq(struct PCB*);
+struct PCB* ioRemovePCB();
 
 
 sem_t ready_sem;  
@@ -66,6 +68,8 @@ struct PCB *io_q = NULL;
 int file_read_done = 0;  
 int cpu_sch_done = 0;
 int cpu_busy = 0;
+int io_busy = 0;
+int io_done = 0;
 
 void main(int argc, char *argv[]) {
     printf("argc: %d\n", argc);
@@ -96,20 +100,28 @@ void main(int argc, char *argv[]) {
     }
     // cpu thread
     pthread_t cpu_thread;
-    
     if (pthread_create(&cpu_thread, NULL, (*cpu_process), (void *)argv[2])) {
         printf("Failed to create cpu thread\n");
     }
-    // Creating CPU thread
-
+    // io thread
+    pthread_t io_thread;
+    if (pthread_create(&cpu_thread, NULL, (*io_process), NULL)) {
+        printf("Failed to create io thread\n");        
+    }
+        
+    
     // Awaiting threads
     pthread_join(fileread_thread, NULL);
     pthread_join(cpu_thread, NULL);
+    pthread_join(io_thread, NULL);
 
     
+    printf("******************* PRINTING READY Q *************\n");
     printPCBs(ready_q);
-    printf("********************************\n");
+    printf("****************** PRINTING IO Q **************\n");
     printPCBs(io_q);
+    printf("****************** PRINTING IO DONE Q **************\n");
+    printPCBs(done_list);
 }   
 
 void print_usage() {
@@ -139,20 +151,20 @@ void *fileread(char *filepath) {
         token = strtok(readBuffer, " ");
         if(!strcmp(token, "proc")) {
             // New PCB for the ready queue
-            printf("Creating new PCB here\n");
+            //printf("Creating new PCB here\n");
             makeAndAddPCB(info, currentPID);
             currentPID++;
         }
         else if (!strcmp(token, "sleep")) {
-            printf("fileread is sleeping\n"); 
+            //printf("fileread is sleeping\n"); 
             int sleep_time;
             unsigned int ret = sscanf(info, "%s %u", token, &sleep_time);
-            printf("readBuffer: %s\n", readBuffer);
-            printf("ret is %d\n", ret);
+            //printf("readBuffer: %s\n", readBuffer);
+            //printf("ret is %d\n", ret);
             if (ret == -1) {
                 printf("sscanf failed\n");
             }
-            printf("sleeping for %u\n", sleep_time);
+            //printf("sleeping for %u\n", sleep_time);
             usleep(sleep_time * 1000);
         }
         else if (!strcmp(token, "stop\n")) {
@@ -167,12 +179,12 @@ void *fileread(char *filepath) {
 void *cpu_process(char *alg) {
     // Called from main
     while (1) {
-        if (file_read_done && !cpu_busy && ready_q == NULL) {
+        if (ready_q == NULL && !cpu_busy && io_q == NULL && !io_busy && file_read_done) { 
             // Work is done 
             cpu_sch_done = 1; 
             break;
         }
-        //printf("cpu asking for ready sem\n");
+        printf("cpu: asking for ready sem\n");
         if (sem_wait(&ready_sem)) {
             printf("Error asking for sem in cpu process\n"); 
             continue;
@@ -183,27 +195,31 @@ void *cpu_process(char *alg) {
         struct PCB* current_proc = readyRemovePCB(alg);
         if (current_proc == NULL) {
             // ready q empty.
+            printf("cpu: releasing ready sem\n");
             sem_post(&ready_sem);
             cpu_busy = 0;
             continue;
         }
-        printf("we have proc number: %d\n", current_proc->pid);
-        printf("with cpu index: %d\n", current_proc->cpuindex);
         // Selecting algorithm handler function
         cpu_sim(current_proc);
         //printf("cpu asking for io sem\n");
+        // giving up ready sem
+        printf("cpu: releasing ready sem\n");
+        if (sem_post(&ready_sem)) {
+            printf("cpu thread error posting ready sem: %s\n", strerror(errno)); 
+            exit(1);
+        }
+
         // Adding proc to the io q
+        printf("cpu: taking io sem\n");
         if (sem_wait(&io_sem)) {
             printf("cpu process failed to get io sem\n");
-            sem_post(&ready_sem);
             continue;
         }
         addIOq(current_proc); 
         cpu_busy = 0;
+        printf("cpu: releasiong io sem\n");
         sem_post(&io_sem);
-        sem_post(&ready_sem);
-        
-        
         
     } 
     printf("cpu process is done\n");
@@ -228,6 +244,75 @@ void cpu_sim(struct PCB* current_proc) {
     }
     
     printf("Returning from cpu sim\n"); 
+}
+
+
+void *io_process() {
+    // for the io thread
+    // io q is also FIFO
+    while (1) {
+        if (file_read_done && ready_q == NULL && !cpu_busy && io_q == NULL) {
+            io_busy = 0;
+            io_done = 1;
+            break;
+        }
+        // Getting semaphore
+        //struct timespec;
+        //timespec.tv_sec = 1;
+        //timespec.tv_nsec = 0;
+        //int ret = sem_timedwait(&io_sem, &timespec};
+        //if (ret == -1 && errno=ETIMEDOUT) {
+            // Couldn't get sem
+            //continue
+        //}
+        //else if (ret == -1)  {
+            //printf("Error in io thread getting io sem: %s\n", strerr(errno));
+            //exit(-1);
+        //}
+        printf("io: taking io sem\n");
+        if (sem_wait(&io_sem)) {
+            printf("io thread error getting io sem\n");
+            continue;
+        }
+        io_busy = 1;
+        if (io_q == NULL) { // empty q
+            io_busy = 0;
+            continue;
+            printf("io: releasing io sem\n");
+            if (sem_post(&io_sem)) {
+                printf("io thread error giving up io sem\n");
+                exit(-1);
+            }
+        } 
+        // pulling proc
+        struct PCB* proc = ioRemovePCB(); 
+        //releasing sem
+        printf("releasing io sem\n");
+        if (sem_post(&io_sem)) {
+            printf("Error in io thread releasiong io sem\n"); 
+            exit(-1);
+        }
+        // processing
+        int io_index = proc->ioindex;
+        unsigned int sleep_time = proc->IOBurst[io_index] * 1000;
+        usleep(sleep_time);
+        proc->ioindex++;
+        // returning to ready_q
+        printf("io: taking ready sem\n");
+        if (sem_wait(&ready_sem)) {
+            printf("io thread error waiting for ready q\n");
+            exit(-1);
+        }
+        readyAddPCB(proc);    
+        printf("io: releasing ready sem\n");
+        if (sem_post(&ready_sem)) {
+            printf("io thread error giving up ready sem\n");
+            exit(-1);
+        }
+        io_busy = 0;
+        
+    }
+    printf("Io process done\n");
 }
 
 /*      List management functions */
@@ -367,6 +452,24 @@ void addIOq(struct PCB* proc) {
     }
 }
 
+struct PCB* ioRemovePCB() {
+        // helper for io_process
+        // caller will have semaphore
+
+        // popping proc
+        struct PCB* proc = io_q;
+        // Adjusting list head
+        io_q = proc->next;
+        if (io_q != NULL) {
+            io_q->prev = NULL; 
+        }
+        // Severing list
+        proc->next = NULL;
+        proc->prev = NULL;
+        return proc;
+}
+
+
 
 /// Queue support functions
 void addDoneQ(struct PCB* proc) {
@@ -412,3 +515,4 @@ void freePCBs(struct PCB* RQ) {
 	free(RQ->IOBurst);
 	free(RQ);
 }
+
