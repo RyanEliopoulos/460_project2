@@ -340,10 +340,6 @@ struct PCB* readyRemovePCB(char *alg) {
         if (ready_q != NULL) {
             ready_q->prev = NULL;
         }
-        printf("Null assignment in ready remove ok\n");
-    }
-    else {
-        printf("Found the problem\n");
     }
     printf("Returning from ready remove\n");
     return next_proc;
