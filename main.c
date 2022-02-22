@@ -33,23 +33,39 @@ struct PCB {
     struct PCB *prev, *next;
 };
 
-// general
+//// general
 void print_usage();
-void *fileread();  // file read thread
-// list management
+void *fileread();       // file read thread
+void *cpu_process();    // cpu thread
+
+void cpu_sim(struct PCB*); // cpu_process helper
+
+////// list management
+/* helpers */
 void printPCBs(struct PCB*);
 void freePCBs(struct PCB*);
+void addDoneQ(struct PCB*);
+/* ready q */
 void makeAndAddPCB(char* info, int newPID);
 void readyAddPCB(struct PCB*);
+struct PCB* readyRemovePCB(char *);
+/* io q */
+void addIOq(struct PCB*);
 
 
-sem_t ready_sem;
+sem_t ready_sem;  
 sem_t io_sem;
 
 struct PCB *ready_q = NULL;
+struct PCB *done_list = NULL;  // Only the cpu thread touches this. Stores completed processes for later evaluation
 struct PCB *io_q = NULL;
 
-file_read_done = 0;  // updated to 1 upon completion
+
+// State trackers
+// updated to 1 upon completion
+int file_read_done = 0;  
+int cpu_sch_done = 0;
+int cpu_busy = 0;
 
 void main(int argc, char *argv[]) {
     printf("argc: %d\n", argc);
@@ -74,14 +90,26 @@ void main(int argc, char *argv[]) {
     // Creating fileread thread
     pthread_t fileread_thread;
     char *filepath = argv[argc - 1];
-    int ret = pthread_create(&fileread_thread, NULL, (*fileread), (void *)filepath);
-    printf("ret: %d\n", ret);
+    if (pthread_create(&fileread_thread, NULL, (*fileread), (void *)filepath)) {
+        printf("Failed to create file read thread\n");
+        exit(-1);
+    }
+    // cpu thread
+    pthread_t cpu_thread;
+    
+    if (pthread_create(&cpu_thread, NULL, (*cpu_process), (void *)argv[2])) {
+        printf("Failed to create cpu thread\n");
+    }
     // Creating CPU thread
 
     // Awaiting threads
     pthread_join(fileread_thread, NULL);
+    pthread_join(cpu_thread, NULL);
 
+    
     printPCBs(ready_q);
+    printf("********************************\n");
+    printPCBs(io_q);
 }   
 
 void print_usage() {
@@ -136,11 +164,71 @@ void *fileread(char *filepath) {
 }
 
 
-void cpu_scheduler(char *alg) {
-    
-   
+void *cpu_process(char *alg) {
+    // Called from main
+    while (1) {
+        if (file_read_done && !cpu_busy && ready_q == NULL) {
+            // Work is done 
+            cpu_sch_done = 1; 
+            break;
+        }
+        //printf("cpu asking for ready sem\n");
+        if (sem_wait(&ready_sem)) {
+            printf("Error asking for sem in cpu process\n"); 
+            continue;
+        }
+        //printf("cpu has ready sem\n");
+        // We have the semaphore 
+        cpu_busy = 1;
+        struct PCB* current_proc = readyRemovePCB(alg);
+        if (current_proc == NULL) {
+            // ready q empty.
+            sem_post(&ready_sem);
+            cpu_busy = 0;
+            continue;
+        }
+        printf("we have proc number: %d\n", current_proc->pid);
+        printf("with cpu index: %d\n", current_proc->cpuindex);
+        // Selecting algorithm handler function
+        cpu_sim(current_proc);
+        //printf("cpu asking for io sem\n");
+        // Adding proc to the io q
+        if (sem_wait(&io_sem)) {
+            printf("cpu process failed to get io sem\n");
+            sem_post(&ready_sem);
+            continue;
+        }
+        addIOq(current_proc); 
+        cpu_busy = 0;
+        sem_post(&io_sem);
+        sem_post(&ready_sem);
+        
+        
+        
+    } 
+    printf("cpu process is done\n");
+     
 }
 
+void cpu_sim(struct PCB* current_proc) {
+    // Simulates the cpu 
+    // semaphore already grabbed before getting here
+    printf("In cpu sim\n");
+    int cpuindex = current_proc->cpuindex; 
+    printf("index is %d\n", cpuindex);
+    unsigned int sleep_time = current_proc->CPUBurst[cpuindex] * 1000;
+    printf("cpu sim sleeping\n");
+    usleep(sleep_time);
+    current_proc->cpuindex++;
+    // @TODO update the performance stats in the pcb
+    if (current_proc->cpuindex >= current_proc->numCPUBurst) {
+        // add to the done_list
+        printf("Adding to done q\n");
+        addDoneQ(current_proc); 
+    }
+    
+    printf("Returning from cpu sim\n"); 
+}
 
 /*      List management functions */
 
@@ -190,7 +278,7 @@ void makeAndAddPCB(char* info, int newPID) {
 /* ready q function */
 void readyAddPCB(struct PCB* newPCB) {
     // Adds the given pcb to the ready_q. 
-    // Called by the fileread thread, CPU, or io threads
+    // Called by the fileread thread and io thread
 
     // First get the ready_q semaphore
     int ret = sem_wait(&ready_sem);
@@ -206,7 +294,9 @@ void readyAddPCB(struct PCB* newPCB) {
 		ready_q = newPCB;
 		newPCB->prev = NULL;
 		newPCB->next = NULL;
+        printf("rq head pid: %d\n", ready_q->pid);
         sem_post(&ready_sem);
+        
 		return;
 	}
 	// Otherwise we need to traverse to the back of the RQ and add it there.
@@ -214,6 +304,7 @@ void readyAddPCB(struct PCB* newPCB) {
 	while(current->next != NULL) {
 		current = current->next;
 	}
+    
 	// Now set current's previous to the new and the next of the new to the current
 	current->next = newPCB;
 	newPCB->next = NULL;
@@ -223,9 +314,78 @@ void readyAddPCB(struct PCB* newPCB) {
 }
 
 
+/* ready q function */
+struct PCB* readyRemovePCB(char *alg) {
+    // Returns the relevant PCB based on the given algorithm
+    // Only called by cpu thread. Semaphore is already taken to get here.
+   
+
+    if (ready_q == NULL) {
+        return NULL;
+    }
+
+    struct PCB* next_proc;
+    // Selecting appropriate algorithm.
+    if (!strcmp("FIFO", alg)) {
+        printf("ready remove FIFO\n");
+        // Popping pcb from queue
+        next_proc = ready_q;
+        // Advancing queue head to next pcb
+        printf("Attempting to access ready_q next\n");
+        ready_q = ready_q->next;
+        printf("successfully  accessed ready_q next\n");
+        // severing list
+        next_proc->next = NULL;
+        next_proc->prev = NULL;
+        if (ready_q != NULL) {
+            ready_q->prev = NULL;
+        }
+        printf("Null assignment in ready remove ok\n");
+    }
+    else {
+        printf("Found the problem\n");
+    }
+    printf("Returning from ready remove\n");
+    return next_proc;
+}
+
+
+/********  io_q functions **********/
+void addIOq(struct PCB* proc) {
+    // Expect caller to have the relevant semaphore first
+    // Updating proc prev/next values just in case 
+    printf("Adding proc %d to io q\n", proc->pid); 
+    proc->next = NULL;
+    proc->prev = NULL;
+    if (io_q == NULL) {
+        io_q = proc;
+    }
+    else {
+        // finding end of the queue
+        struct PCB* temp = io_q;
+        while (temp->next != NULL) {
+            temp = temp->next; 
+        }
+        temp->next = proc;
+        proc->prev = temp;
+    }
+}
 
 
 /// Queue support functions
+void addDoneQ(struct PCB* proc) {
+    // Order of the queue probably doesn't matter, so we'll just put each
+    // process at the head of the queue
+    // prev, next should already have been reset before arriving
+    if (done_list == NULL) {
+        done_list = proc;
+    }
+    else {
+        proc->next = done_list; 
+        done_list = proc;
+    }
+}
+
 void printPCBs(struct PCB* queue) {
 	struct PCB* current = queue;
 	while(current != NULL) {
